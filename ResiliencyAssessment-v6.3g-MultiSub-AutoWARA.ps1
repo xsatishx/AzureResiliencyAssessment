@@ -22,6 +22,7 @@ Azure Resiliency Assessment
 .OUTPUTS
 ~\resiliency_reports\<timestamp>-ResiliencyReport.csv        (all subscriptions combined)
 ~\resiliency_reports\<timestamp>-ResiliencyReport.json       (all subscriptions combined)
+~\resiliency_reports\<timestamp>-Summary.txt                 (high-level summary: counts by severity, subscription, resource type)
 ~\resiliency_reports\<timestamp>\<subId>-Resiliency.csv      (per-subscription; unless -NoPerSubFiles)
 
 .NOTES
@@ -82,12 +83,13 @@ try {
 # -----------------------------------------------------------------------------
 # 3) Prepare output folders and global buffers (cover all subscriptions)
 # -----------------------------------------------------------------------------
-$reportDir = Join-Path $HOME "resiliency_reports"
+$reportDir   = Join-Path $HOME "resiliency_reports"
 if (-not (Test-Path $reportDir)) { New-Item -ItemType Directory -Path $reportDir | Out-Null }
-$timestamp = (Get-Date).ToString("yyyy-MM-dd-HHmmss")
-$rootCsv   = Join-Path $reportDir "$timestamp-ResiliencyReport.csv"
-$rootJson  = Join-Path $reportDir "$timestamp-ResiliencyReport.json"
-$tsDir     = Join-Path $reportDir $timestamp
+$timestamp   = (Get-Date).ToString("yyyy-MM-dd-HHmmss")
+$rootCsv     = Join-Path $reportDir "$timestamp-ResiliencyReport.csv"
+$rootJson    = Join-Path $reportDir "$timestamp-ResiliencyReport.json"
+$rootSummary = Join-Path $reportDir "$timestamp-Summary.txt"
+$tsDir       = Join-Path $reportDir $timestamp
 if (-not (Test-Path $tsDir)) { New-Item -ItemType Directory -Path $tsDir | Out-Null }
 
 $AllFindings = New-Object System.Collections.Generic.List[object]   # master list of all findings
@@ -568,6 +570,63 @@ if ($AllFindings.Count -gt 0) {
 } else {
   Write-Warning ""
   Write-Warning "No findings collected across any subscription."
+}
+
+# -----------------------------------------------------------------------------
+# 7) Write summary file
+# -----------------------------------------------------------------------------
+$summaryLines = New-Object System.Collections.Generic.List[string]
+$summaryLines.Add("Azure Resiliency Assessment - Summary Report")
+$summaryLines.Add("Generated : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")  # human-readable; file name uses filesystem-safe format
+$summaryLines.Add("=" * 70)
+$summaryLines.Add("")
+
+$summaryLines.Add("TOTAL FINDINGS: $($AllFindings.Count)")
+$summaryLines.Add("")
+
+# Breakdown by severity
+$summaryLines.Add("FINDINGS BY SEVERITY:")
+$severities = @("High", "Medium", "Low")
+foreach ($sev in $severities) {
+  $cnt = ($AllFindings | Where-Object { $_.Severity -eq $sev }).Count
+  $summaryLines.Add(("  {0,-10} {1,5}" -f $sev, $cnt))
+}
+$summaryLines.Add("")
+
+# Breakdown by subscription
+$summaryLines.Add("FINDINGS BY SUBSCRIPTION:")
+$AllFindings | Group-Object SubscriptionId | Sort-Object Name | ForEach-Object {
+  $summaryLines.Add(("  {0,-40} {1,5}" -f $_.Name, $_.Count))
+}
+$summaryLines.Add("")
+
+# Breakdown by resource type
+$summaryLines.Add("FINDINGS BY RESOURCE TYPE:")
+foreach ($k in ($AllSummary.Keys | Sort-Object)) {
+  $summaryLines.Add(("  {0,-50} {1,5}" -f $k, $AllSummary[$k]))
+}
+$summaryLines.Add("")
+
+# High-severity findings detail
+$highFindings = $AllFindings | Where-Object { $_.Severity -eq "High" }
+if ($highFindings) {
+  $summaryLines.Add("HIGH SEVERITY FINDINGS:")
+  $summaryLines.Add("-" * 70)
+  foreach ($f in ($highFindings | Sort-Object SubscriptionId, ResourceType, ResourceName)) {
+    $summaryLines.Add("  Subscription : $($f.SubscriptionId)")
+    $summaryLines.Add("  Resource     : $($f.ResourceName) [$($f.ResourceType)]")
+    $summaryLines.Add("  Check        : $($f.Check)")
+    $summaryLines.Add("  Finding      : $($f.Finding)")
+    $summaryLines.Add("  Recommendation: $($f.Recommendation)")
+    $summaryLines.Add("")
+  }
+}
+
+try {
+  $summaryLines | Out-File -FilePath $rootSummary -Encoding utf8 -Force
+  Write-Host "Summary file:  $rootSummary"
+} catch {
+  Write-Warning "Failed to write summary file to '$rootSummary': $($_.Exception.Message)"
 }
 
 Write-Host ""
